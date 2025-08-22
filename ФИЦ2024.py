@@ -1,288 +1,201 @@
-!pip install pandas numpy matplotlib neuralforecast scikit-learn
+# ============================================================
+# УСТАНОВКА БИБЛИОТЕК
+# ============================================================
+# !pip install pandas numpy matplotlib neuralforecast scikit-learn
 
-
-
-import pandas as pd
-import numpy as np
-from neuralforecast.core import NeuralForecast
-from neuralforecast.losses.pytorch import DistributionLoss
-from neuralforecast.models import TimesNet
+# ============================================================
+# ИМПОРТЫ
+# ============================================================
+import os
+from math import sqrt
 from datetime import datetime
-from neuralforecast import NeuralForecast
-from neuralforecast.models import MLP, NBEATS, RNN, TSMixer, NHITS, NBEATSx
-from neuralforecast.losses.pytorch import RMSE
-from neuralforecast.tsdataset import TimeSeriesDataset
-from neuralforecast.losses.numpy import mae
+
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error
-from math import sqrt
 
-def plot_forecast(test, predict):
+from neuralforecast.core import NeuralForecast
+from neuralforecast.models import MLP, NBEATS, RNN, TSMixer, NHITS, NBEATSx, TimesNet
+from neuralforecast.losses.pytorch import RMSE
+
+# ============================================================
+# КОНФИГ
+# ============================================================
+CSV_FILES = {
+    "1 цех": "data1.csv",
+    "2 цех": "data2.csv",
+    "3 цех": "data3.csv",
+    "4 цех": "data4.csv",
+    "5 цех": "data5.csv",
+}
+DATE_COL = "date"
+TARGET_COL = "value"
+TIME_COL = "ds"
+FREQ = "D"
+
+# Параметры моделей/валидации
+H = 30
+INPUT_SIZE = 60
+VAL_SIZE = 30
+MAX_STEPS = 100
+
+# ============================================================
+# УТИЛИТЫ
+# ============================================================
+def load_series(csv_path: str, uid: str) -> pd.DataFrame:
+    """Читает CSV, делает колонки (ds, value, unique_id)."""
+    df = pd.read_csv(csv_path)
+    if DATE_COL not in df.columns or TARGET_COL not in df.columns:
+        raise ValueError(f"{csv_path}: ожидались колонки '{DATE_COL}' и '{TARGET_COL}'")
+    df = df.rename(columns={DATE_COL: TIME_COL})
+    df[TIME_COL] = pd.to_datetime(df[TIME_COL])
+    df = df[[TIME_COL, TARGET_COL]].copy()
+    df["unique_id"] = uid
+    return df
+
+def fill_na_rolling_mean(df: pd.DataFrame, col: str, window: int = 2) -> pd.DataFrame:
+    """Заполняет NaN скользящим средним по соседям (min_periods=1)."""
+    s = df[col]
+    df[col] = s.fillna(s.rolling(window=window, min_periods=1).mean())
+    return df
+
+def plot_forecast(test_df: pd.DataFrame, pred_df: pd.DataFrame, title: str = ""):
     """
-    Функция для визуализации фактических и предсказанных значений.
+    Отрисовка фактов и всех модельных прогнозов.
+    test_df: DataFrame с колонками ['ds','value']
+    pred_df: DataFrame c колонками ['ds', 'unique_id', <имена моделей>...]
     """
-    plt.figure(figsize=(200, 100))
-
-    # Фактические значения
-    plt.plot(test['ds'], test['value'], label='Фактические значения', color='blue', marker='o')
-
-    # Предсказанные значения TimesNet
-    plt.plot(predict['ds'], predict['TimesNet'], label='Предсказанные значения TimesNet', color='orange', marker='x')
-
-    # Предсказанные значения NBEATS
-    plt.plot(predict['ds'], predict['NBEATS'], label='Предсказанные значения NBEATS', color='yellow', marker='x')
-
-    # Предсказанные значения MLP
-    plt.plot(predict['ds'], predict['MLP'], label='Предсказанные значения MLP', color='black', marker='x')
-
-    # Предсказанные значения RNN
-    plt.plot(predict['ds'], predict['RNN'], label='Предсказанные значения RNN', color='green', marker='x')
-
-    # Предсказанные значения NHITS
-    plt.plot(predict['ds'], predict['NHITS'], label='Предсказанные значения NHITS', color='grey', marker='x')
-
-    # Предсказанные значения NBEATSx
-    plt.plot(predict['ds'], predict['NBEATSx'], label='Предсказанные значения NBEATSx', color='brown', marker='x')
-
-    # Настройка графика
-    plt.title('Сравнение фактических и предсказанных значений')
-    plt.xlabel('Время (индексы)')
-    plt.ylabel('Прогноз')
+    plt.figure(figsize=(16, 6))
+    # Факты
+    plt.plot(test_df["ds"], test_df["value"], label="Факт", marker="o")
+    # Прогнозы всех моделей
+    model_cols = [c for c in pred_df.columns if c not in ("ds", "unique_id")]
+    for c in model_cols:
+        plt.plot(pred_df["ds"], pred_df[c], label=c, marker="x")
+    plt.title(title or "Факты vs Прогнозы")
+    plt.xlabel("ds")
+    plt.ylabel("value")
+    plt.grid(True)
     plt.legend()
-    plt.grid()
+    plt.tight_layout()
     plt.show()
 
-def calculate_rmse(test, predict):
+def rmse_series(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    return sqrt(mean_squared_error(y_true, y_pred))
+
+def calculate_rmse_by_merge(actual_df: pd.DataFrame, predict_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Функция для вычисления RMSE для различных моделей.
+    Считает RMSE по всем моделям после merge по ds.
+    actual_df: ['ds','value'] (и опц. 'unique_id')
+    predict_df: ['ds','unique_id', <models>...]
     """
-    RMSE_timellm = sqrt(mean_squared_error(test, predict['TimesNet']))
-    RMSE_nbeats = sqrt(mean_squared_error(test, predict['NBEATS']))
-    RMSE_nbeatsx = sqrt(mean_squared_error(test, predict['NBEATSx']))
-    RMSE_mlp = sqrt(mean_squared_error(test, predict['MLP']))
-    RMSE_RNN = sqrt(mean_squared_error(test, predict['RNN']))
-    RMSE_TSMixer = sqrt(mean_squared_error(test, predict['TSMixer']))
-    RMSE_NHITS = sqrt(mean_squared_error(test, predict['NHITS']))
+    cols = [c for c in predict_df.columns if c not in ("ds", "unique_id")]
+    merged = predict_df.merge(
+        actual_df[[TIME_COL, TARGET_COL] + ([ "unique_id"] if "unique_id" in actual_df.columns else [])],
+        left_on=[TIME_COL] + (["unique_id"] if "unique_id" in predict_df.columns and "unique_id" in actual_df.columns else []),
+        right_on=[TIME_COL] + (["unique_id"] if "unique_id" in predict_df.columns and "unique_id" in actual_df.columns else []),
+        how="inner"
+    )
+    if merged.empty:
+        print("⚠️ Нет пересечения дат между фактами и прогнозами — RMSE не посчитан.")
+        return pd.DataFrame()
+
+    metrics = {f"{c} RMSE": rmse_series(merged[TARGET_COL].values, merged[c].values) for c in cols}
+    return pd.DataFrame([metrics])
+
+def build_models() -> list:
+    """Фабрика моделей NeuralForecast."""
+    nbeats = NBEATS(h=H, input_size=INPUT_SIZE, max_steps=MAX_STEPS, loss=RMSE())
+    rnn = RNN(h=H, input_size=INPUT_SIZE, max_steps=MAX_STEPS, loss=RMSE())
+    mlp = MLP(h=H, input_size=INPUT_SIZE, max_steps=MAX_STEPS, loss=RMSE())
+    nbeatsx = NBEATSx(
+        h=H, input_size=INPUT_SIZE, loss=RMSE(),
+        scaler_type='robust', dropout_prob_theta=0.5,
+        max_steps=MAX_STEPS, val_check_steps=10, early_stop_patience_steps=2
+    )
+    nhits = NHITS(
+        h=H, input_size=INPUT_SIZE, loss=RMSE(),
+        scaler_type='robust', dropout_prob_theta=0.5,
+        max_steps=MAX_STEPS, val_check_steps=10, early_stop_patience_steps=2
+    )
+    timellm = TimesNet(
+        h=H, input_size=INPUT_SIZE, hidden_size=16, conv_hidden_size=32,
+        loss=RMSE(), scaler_type='standard', learning_rate=1e-3,
+        max_steps=MAX_STEPS, val_check_steps=50, early_stop_patience_steps=2
+    )
+    tsmixer = TSMixer(
+        h=H, input_size=INPUT_SIZE, n_series=1, n_block=3, ff_dim=4, dropout=0,
+        revin=True, scaler_type='standard', loss=RMSE(), learning_rate=1e-3,
+        max_steps=MAX_STEPS, val_check_steps=50, early_stop_patience_steps=2, batch_size=30
+    )
+    return [nbeats, nbeatsx, mlp, nhits, timellm, rnn, tsmixer]
+
+# ============================================================
+# ПОДГОТОВКА ДАННЫХ
+# ============================================================
+# Чтение всех рядов, добавление unique_id
+dfs = []
+for uid, path in CSV_FILES.items():
+    df_i = load_series(path, uid)
+    dfs.append(df_i)
+df = pd.concat(dfs, axis=0, ignore_index=True).sort_values(TIME_COL)
+
+# Быстрый контроль пропусков
+na_counts = df.groupby("unique_id")[TARGET_COL].apply(lambda s: s.isna().sum())
+print("NaN по цехам:\n", na_counts)
+
+# Пример: заполним пропуски для всех рядов скользящим средним (при необходимости)
+df = df.groupby("unique_id", group_keys=False).apply(lambda g: fill_na_rolling_mean(g, TARGET_COL, window=2))
+
+# Тренировочный датасет (пример: последние 344 точки по каждому id)
+train_df = df.groupby("unique_id", group_keys=False).tail(344)
+
+# ============================================================
+# МОДЕЛИ И ОБУЧЕНИЕ
+# ============================================================
+models = build_models()
+nf = NeuralForecast(models=models, freq=FREQ)
+
+# ВНИМАНИЕ: val_size=30 — валидация на хвостовых точках тренировочного df.
+# Для честной оценки на истории лучше использовать cross_validation.
+nf.fit(df=train_df, val_size=VAL_SIZE, time_col=TIME_COL, target_col=TARGET_COL)
+
+# Прогноз на горизонт H
+forecasts = nf.predict().reset_index()  # ['unique_id','ds', <models>...]
+
+# ============================================================
+# ВИЗУАЛИЗАЦИЯ И МЕТРИКИ ПО КАЖДОМУ ЦЕХУ
+# ============================================================
+for uid in CSV_FILES.keys():
+    f_uid = forecasts[forecasts["unique_id"] == uid].copy()
+    y_uid = df[df["unique_id"] == uid].copy()
+
+    # Для наглядности сравним хвост фактов и прогноз (оси времени могут не совпасть)
+    plot_forecast(y_uid.tail(H), f_uid, title=f"Цех: {uid}")
+
+    # Если у вас есть фактические данные на период прогноза — подставьте сюда df_fact_uid
+    # df_fact_uid = pd.read_csv("PATH_TO_FACT.csv")  # должен иметь 'ds','value' (+ 'unique_id' опц.)
+    # df_fact_uid['ds'] = pd.to_datetime(df_fact_uid['ds'])
+    # df_fact_uid['unique_id'] = uid
+    # metrics = calculate_rmse_by_merge(df_fact_uid, f_uid)
+    # print(f"RMSE для {uid}:\n", metrics)
+
+# ============================================================
+# ПРИМЕР: ПРОГНОЗ ДЛЯ ОДНОГО РЯДА (1 цех)
+# ============================================================
+uid = "1 цех"
+data_one = df[df["unique_id"] == uid][[TIME_COL, TARGET_COL, "unique_id"]].copy()
+
+nf_single = NeuralForecast(models=models, freq=FREQ)
+nf_single.fit(df=data_one, val_size=VAL_SIZE, time_col=TIME_COL, target_col=TARGET_COL)
+forecasts_one = nf_single.predict().reset_index()
+
+plot_forecast(data_one.tail(H), forecasts_one, title=f"Один ряд: {uid}")
 
-    data = {
-        'TimesNet RMSE': [RMSE_timellm],
-        'N-BEATS RMSE': [RMSE_nbeats],
-        'N-BEATSx RMSE': [RMSE_nbeatsx],
-        'MLP RMSE': [RMSE_mlp],
-        'RNN RMSE': [RMSE_RNN],
-        'TSMixer RMSE': [RMSE_TSMixer],
-        'NHITS RMSE': [RMSE_NHITS]
-    }
-
-    metrics_df = pd.DataFrame(data=data)
-    return metrics_df
-
-data1 = pd.read_csv("data1.csv")
-data2 = pd.read_csv("data2.csv")
-data3 = pd.read_csv("data3.csv")
-data4 = pd.read_csv("data4.csv")
-data5 = pd.read_csv("data5.csv")
-
-data1['ds'] = pd.to_datetime(data1['date'])
-data2['ds'] = pd.to_datetime(data2['date'])
-data3['ds'] = pd.to_datetime(data3['date'])
-data4['ds'] = pd.to_datetime(data4['date'])
-data5['ds'] = pd.to_datetime(data5['date'])
-
-data1 = data1.drop(columns=['date'])
-data2 = data2.drop(columns=['date'])
-data3 = data3.drop(columns=['date'])
-data4 = data4.drop(columns=['date'])
-data5 = data5.drop(columns=['date'])
-
-#маркировка цехов
-data1['unique_id'] = "1 цех"
-
-data2['unique_id'] = "2 цех"
-
-data3['unique_id'] = "3 цех"
-
-data4['unique_id'] = "4 цех"
-
-data5['unique_id'] = "5 цех"
-
-print(data1['value'].isnull().sum()) #проверка на NaN значения
-print(data2['value'].isnull().sum())
-print(data3['value'].isnull().sum())
-print(data4['value'].isnull().sum())
-print(data5['value'].isnull().sum())
-
-
-
-data2['value'] = data2['value'].fillna(data2['value'].rolling(window=2, min_periods=1).mean()) #замена NaN значений на среднее высчитанное по соседним значения
-
-data3['value'] = data3['value'].fillna(data3['value'].rolling(window=2, min_periods=1).mean())
-data3['value'] = data3['value'].fillna(data3['value'].rolling(window=2, min_periods=1).mean())
-
-"""#Предсказание с учетом экзоненных факторов"""
-
-df = pd.concat([data1, data2, data3, data4, data5], axis=0)  #объединение данных в один датафрейм
-
-train_df = df.groupby('unique_id').tail(344)
-
-train_df
-
-
-
-nbeats = NBEATS(h=30, input_size=60, max_steps=100, loss=RMSE())
-
-rnn = RNN(h=30, input_size=60, max_steps=100, loss=RMSE())
-
-mlp = MLP(h=30, input_size=60, max_steps=100, loss=RMSE())
-
-nbeatsx = NBEATSx(h=30, input_size=60,
-                loss=RMSE(),
-                scaler_type='robust',
-                dropout_prob_theta=0.5,
-                max_steps=100,
-                val_check_steps=10,
-                early_stop_patience_steps=2)
-
-nhits = NHITS(h=30, input_size=60,
-                loss=RMSE(),
-                scaler_type='robust',
-                dropout_prob_theta=0.5,
-                max_steps=100,
-                val_check_steps=10,
-                early_stop_patience_steps=2)
-
-timellm = TimesNet(h=30,
-                input_size=60,
-                hidden_size = 16,
-                conv_hidden_size = 32,
-                loss=RMSE(),
-                scaler_type='standard',
-                learning_rate=1e-3,
-                max_steps=100,
-                val_check_steps=50,
-                early_stop_patience_steps=2)
-
-tsmixer = TSMixer(h=30,
-                input_size=60,
-                n_series=1,
-                n_block=3,
-                ff_dim=4,
-                dropout=0,
-                revin=True,
-                scaler_type='standard',
-                loss=RMSE(),
-                learning_rate=1e-3,
-                max_steps=100,
-                val_check_steps=50,
-                early_stop_patience_steps=2,
-                batch_size=30)
-
-
-nf = NeuralForecast(models=[nbeats, nbeatsx, mlp, nhits, timellm, rnn, tsmixer], freq='D')
-
-nf.fit(df=train_df, val_size=30, time_col='ds', target_col='value')
-
-forecasts = nf.predict()
-
-forecasts = forecasts.reset_index()
-
-
-
-# Фильтруем по unique_id
-filtered_data1 = forecasts[forecasts['unique_id'] == '1 цех']
-Y_test_df_data1 = df[df['unique_id'] == '1 цех']
-plot_forecast(Y_test_df_data1.tail(30), filtered_data1)
-
-
-
-# Фильтруем по unique_id
-filtered_data2 = forecasts[forecasts['unique_id'] == '2 цех']
-Y_test_df_data2 = df[df['unique_id'] == '2 цех']
-plot_forecast(Y_test_df_data2.tail(30), filtered_data2)
-
-# Фильтруем по unique_id
-filtered_data3 = forecasts[forecasts['unique_id'] == '3 цех']
-Y_test_df_data3 = df[df['unique_id'] == '3 цех']
-plot_forecast(Y_test_df_data3.tail(30), filtered_data3)
-
-# Фильтруем по unique_id
-filtered_data4 = forecasts[forecasts['unique_id'] == '4 цех']
-Y_test_df_data4 = df[df['unique_id'] == '4 цех']
-plot_forecast(Y_test_df_data4.tail(30), filtered_data4)
-
-# Фильтруем по unique_id
-filtered_data5 = forecasts[forecasts['unique_id'] == '5 цех']
-Y_test_df_data5 = df[df['unique_id'] == '5 цех']
-plot_forecast(Y_test_df_data5.tail(30), filtered_data5)
-
-
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-predict = forecasts[forecasts['unique_id'] == '#номер цеха']
-
-metrics_df = calculate_rmse(df_fact['value'], predict)
-metrics_df
-
-"""#Предсказание для одного ряда"""
-
-#1 цех
-
-nf.fit(df=data1, val_size=30, time_col='ds', target_col='value')
-forecasts = nf.predict()
-
-plot_forecast(data1.tail(30), forecasts)
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-metrics_df = calculate_rmse(df_fact['value'], forecasts)
-metrics_df
-
-#2 цех
-
-nf.fit(df=data2, val_size=30, time_col='ds', target_col='value')
-forecasts = nf.predict()
-
-plot_forecast(data2.tail(30), forecasts)
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-metrics_df = calculate_rmse(df_fact['value'], forecasts)
-metrics_df
-
-#3 цех
-
-nf.fit(df=data3, val_size=30, time_col='ds', target_col='value')
-forecasts = nf.predict()
-
-plot_forecast(data3.tail(30), forecasts)
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-metrics_df = calculate_rmse(df_fact['value'], forecasts)
-metrics_df
-
-#4 цех
-
-nf.fit(df=data4, val_size=30, time_col='ds', target_col='value')
-forecasts = nf.predict()
-
-plot_forecast(data4.tail(30), forecasts)
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-metrics_df = calculate_rmse(df_fact['value'], forecasts)
-metrics_df
-
-#5 цех
-
-nf.fit(df=data5, val_size=30, time_col='ds', target_col='value')
-forecasts = nf.predict()
-
-plot_forecast(data5.tail(30), forecasts)
-
-df_fact = pd.read_csv("....csv") #загрузка фактических данных для проверки метрик
-
-metrics_df = calculate_rmse(df_fact['value'], forecasts)
-metrics_df
+# Если есть факт на период прогноза
+# df_fact = pd.read_csv("PATH_TO_FACT.csv")
+# df_fact['ds'] = pd.to_datetime(df_fact['ds'])
+# df_fact['unique_id'] = uid
+# print(calculate_rmse_by_merge(df_fact, forecasts_one))
 
