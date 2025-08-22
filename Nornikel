@@ -298,11 +298,6 @@ def search_and_display_text(query, k=5, show_images=True):
     
     return texts
 
-# Пример использования новой функции
-print("\n" + "="*80)
-print("ДЕМОНСТРАЦИЯ НОВОЙ ФУНКЦИИ ПОИСКА")
-print("="*80)
-
 # Можно выполнить несколько поисков
 search_and_display_text("Финансовые результаты", k=3)
 # search_and_display_text("прибыль", k=3)
