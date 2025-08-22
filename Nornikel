@@ -1,21 +1,36 @@
-#Программа работает на python 3.9.13 64-bit
-#Установка необходимых библиотек
-!pip install poppler-utils
-!pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-!pip install colpali-engine
-!pip install --upgrade byaldi
-!pip install flash-attn
-!pip install pywin32
-!pip install PyPDF2  
-!pip install pytesseract  
-!pip install Pillow  
+# ============================================================
+# Программа работает на python 3.9.13 64-bit
+# ============================================================
 
-folder = r'' #папка с файлами pdf
+# ---------------- УСТАНОВКА БИБЛИОТЕК -----------------------
+# !pip install poppler-utils
+# !pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# !pip install colpali-engine
+# !pip install --upgrade byaldi
+# !pip install flash-attn
+# !pip install pywin32
+# !pip install PyPDF2
+# !pip install pytesseract
+# !pip install Pillow
 
-#Код для получения метаданных с файлов
+# ---------------- ИМПОРТЫ -----------------------------------
 import os
 import win32com.client
+import PyPDF2
+import pytesseract
+import matplotlib.pyplot as plt
+from PIL import Image
+from pdf2image import convert_from_path
+from byaldi import RAGMultiModalModel  # загрузка модели RAG
+
+# ---------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---------------------
+folder = r''          # Папка с PDF файлами
+path_to_index = r''   # Путь к сохраненному индексу
+
+# ---------------- ФУНКЦИИ -----------------------------------
+
 def get_file_metadata(path, filename, metadata):
+    """Получение метаданных файлов (Windows Shell)"""
     try:
         if not os.path.isdir(path):
             raise ValueError(f"The specified path does not exist: {path}")
@@ -23,11 +38,13 @@ def get_file_metadata(path, filename, metadata):
         sh = win32com.client.gencache.EnsureDispatch('Shell.Application', 0)
         ns = sh.NameSpace(path)
         if ns is None:
-            raise RuntimeError(f"Failed to access the namespace for the path: {path}")
-        file_metadata = dict()
+            raise RuntimeError(f"Failed to access namespace for path: {path}")
+
         item = ns.ParseName(str(filename))
         if item is None:
-            raise ValueError(f"The file does not exist in the specified path: {filename}")
+            raise ValueError(f"File does not exist: {filename}")
+        
+        file_metadata = {}
         for ind, attribute in enumerate(metadata):
             attr_value = ns.GetDetailsOf(item, ind)
             if attr_value:
@@ -37,35 +54,8 @@ def get_file_metadata(path, filename, metadata):
         print(f"Error retrieving metadata for {filename}: {e}")
         return {}
 
-if __name__ == '__main__':
-    metadata = []
-    pdf_files = [f for f in os.listdir(folder) if f.endswith(".pdf")]
-    for pdf_file in pdf_files:
-        metadata1 = ['Name', 'Size', 'Item type', 'Date modified', 'Date created']
-        file_metadata = get_file_metadata(folder, pdf_file, metadata1)
-        metadata.append(file_metadata)
-
-from byaldi import RAGMultiModalModel #загрузка модели RAG
-RAG = RAGMultiModalModel.from_pretrained("vidore/colqwen2-v1.0")
-
-#Код для индексации pdf 
-#RAG.index(
-    #input_path="data", # Путь, где хранятся документы
-    #index_name='Nornikel', # # Имя, которое вы хотите дать своему индексу. Он будет сохранен по адресу `index_root/index_name/`
-    #store_collection_with_index=False, # Должен ли индекс хранить документы в кодировке base64
-    #doc_ids=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], # Id документов
-    #metadata=metadata, # Метаданные
-    #overwrite=True # Перезаписывать ли индекс, если он уже существует. Если False, то возвращается None и ничего не делается, если `index_root/index_name` уже существует
-#)
-
-#Код для загрузки индексов pdf 
-path_to_index = r"C:\Users\user\Desktop\Nornikel\.byaldi\Nornikel"
-RAG = RAGMultiModalModel.from_index(path_to_index)
-
-#Функция для конвертации pdf в изображения  
-import os
-from pdf2image import convert_from_path
 def convert_pdfs_to_images(pdf_folder):
+    """Конвертирует PDF в список изображений"""
     pdf_files = [f for f in os.listdir(pdf_folder) if f.endswith(".pdf")]
     all_images = {}
     for doc_id, pdf_file in enumerate(pdf_files):
@@ -74,67 +64,29 @@ def convert_pdfs_to_images(pdf_folder):
         all_images[doc_id] = images
     return all_images
 
-all_images = convert_pdfs_to_images(folder)
-
-#Функция для извлечения текста из PDF
-import PyPDF2
 def extract_text_from_pdf_page(pdf_path, page_num):
-    """
-    Извлекает текст с определенной страницы PDF файла
-    
-    Args:
-        pdf_path (str): Путь к PDF файлу
-        page_num (int): Номер страницы (начинается с 1)
-    
-    Returns:
-        str: Текст со страницы
-    """
+    """Извлекает текст с определенной страницы PDF"""
     try:
         with open(pdf_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             if page_num <= len(pdf_reader.pages):
-                page = pdf_reader.pages[page_num - 1]  # PyPDF2 использует индексацию с 0
-                text = page.extract_text()
-                return text.strip()
+                page = pdf_reader.pages[page_num - 1]
+                return (page.extract_text() or "").strip()
             else:
                 return "Страница не найдена"
     except Exception as e:
         return f"Ошибка при извлечении текста: {str(e)}"
 
-#Альтернативная функция для OCR (если текст в PDF не извлекается)
-import pytesseract
-from PIL import Image
 def extract_text_with_ocr(image):
-    """
-    Извлекает текст из изображения с помощью OCR
-    
-    Args:
-        image: PIL Image объект
-    
-    Returns:
-        str: Распознанный текст
-    """
+    """OCR распознавание текста с изображения"""
     try:
-        # Если у вас Windows, укажите путь к tesseract.exe
         # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        
-        text = pytesseract.image_to_string(image, lang='rus+eng')  # Поддержка русского и английского
-        return text.strip()
+        return pytesseract.image_to_string(image, lang='rus+eng').strip()
     except Exception as e:
         return f"Ошибка OCR: {str(e)}"
 
-#Функция для извлечения текста из результатов поиска
-def extract_text_from_search_results(results, folder):
-    """
-    Извлекает текст из страниц, найденных в результате поиска
-    
-    Args:
-        results: Результаты поиска от RAG
-        folder: Путь к папке с PDF файлами
-    
-    Returns:
-        list: Список словарей с информацией о странице и текстом
-    """
+def extract_text_from_search_results(results, folder, all_images):
+    """Извлекает текст из найденных страниц PDF"""
     pdf_files = [f for f in os.listdir(folder) if f.endswith(".pdf")]
     extracted_texts = []
     
@@ -143,16 +95,12 @@ def extract_text_from_search_results(results, folder):
         page_num = result["page_num"]
         score = result.get("score", "N/A")
         
-        # Получаем путь к PDF файлу
         if doc_id < len(pdf_files):
             pdf_file = pdf_files[doc_id]
             pdf_path = os.path.join(folder, pdf_file)
             
-            # Извлекаем текст
             text = extract_text_from_pdf_page(pdf_path, page_num)
-            
-            # Если текст не извлекся или очень короткий, попробуем OCR
-            if len(text) < 50:  # Если текста мало, возможно нужен OCR
+            if len(text) < 50:  # если текста мало → OCR
                 try:
                     image = all_images[doc_id][page_num - 1]
                     ocr_text = extract_text_with_ocr(image)
@@ -168,36 +116,10 @@ def extract_text_from_search_results(results, folder):
                 "score": score,
                 "text": text
             })
-        
     return extracted_texts
 
-#Поиск с помощью RAG в pdf файлах 
-text_query = "Финансовые результаты НЛМК"
-results = RAG.search(text_query, k=5)
-print("Результаты поиска:")
-print(results)
-
-#Извлечение текста из найденных страниц
-extracted_texts = extract_text_from_search_results(results, folder)
-
-#Вывод извлеченного текста
-print("\n" + "="*80)
-print("ИЗВЛЕЧЕННЫЙ ТЕКСТ ИЗ НАЙДЕННЫХ СТРАНИЦ:")
-print("="*80)
-
-for i, item in enumerate(extracted_texts, 1):
-    print(f"\n--- РЕЗУЛЬТАТ {i} ---")
-    print(f"Файл: {item['pdf_file']}")
-    print(f"Страница: {item['page_num']}")
-    print(f"Релевантность: {item['score']}")
-    print(f"Doc ID: {item['doc_id']}")
-    print("-" * 50)
-    print("ТЕКСТ:")
-    print(item['text'])
-    print("-" * 50)
-
-#Поиск страниц из результатов
 def get_grouped_images(results, all_images):
+    """Возвращает изображения страниц из результатов поиска"""
     grouped_images = []
     for result in results:
         doc_id = result["doc_id"]
@@ -205,28 +127,8 @@ def get_grouped_images(results, all_images):
         grouped_images.append(all_images[doc_id][page_num - 1]) 
     return grouped_images
 
-grouped_images = get_grouped_images(results, all_images)
-
-#Отображение результатов (страниц из pdf)
-import matplotlib.pyplot as plt
-fig, axes = plt.subplots(1, 5, figsize=(150, 100))
-for i, ax in enumerate(axes.flat):
-    img = grouped_images[i]
-    ax.imshow(img)
-    ax.set_title(f"Док {extracted_texts[i]['doc_id']}, стр {extracted_texts[i]['page_num']}\n{extracted_texts[i]['pdf_file'][:30]}...")
-    ax.axis("off")
-plt.tight_layout()
-plt.show()
-
-#Функция для сохранения результатов в файл
-def save_results_to_file(extracted_texts, filename="search_results.txt"):
-    """
-    Сохраняет результаты поиска и извлеченный текст в файл
-    
-    Args:
-        extracted_texts: Список с извлеченными текстами
-        filename: Имя файла для сохранения
-    """
+def save_results_to_file(extracted_texts, text_query, filename="search_results.txt"):
+    """Сохраняет результаты поиска в файл"""
     with open(filename, 'w', encoding='utf-8') as f:
         f.write("РЕЗУЛЬТАТЫ ПОИСКА И ИЗВЛЕЧЕНИЯ ТЕКСТА\n")
         f.write("="*80 + "\n")
@@ -243,32 +145,17 @@ def save_results_to_file(extracted_texts, filename="search_results.txt"):
             f.write("ТЕКСТ:\n")
             f.write(item['text'] + "\n")
             f.write("-" * 50 + "\n\n")
-    
     print(f"Результаты сохранены в файл: {filename}")
 
-# Сохранение результатов
-save_results_to_file(extracted_texts, "nornikel_search_results.txt")
-
-#Дополнительная функция для поиска и отображения конкретных фрагментов
-def search_and_display_text(query, k=5, show_images=True):
-    """
-    Выполняет поиск и отображает как изображения, так и текст
-    
-    Args:
-        query: Поисковый запрос
-        k: Количество результатов
-        show_images: Показывать ли изображения
-    """
+def search_and_display_text(RAG, query, folder, all_images, k=5, show_images=True):
+    """Выполняет поиск и отображает текст и страницы"""
     print(f"Поиск по запросу: '{query}'")
     print("="*50)
     
-    # Поиск
-    search_results = RAG.search(query, k=k)
+    results = RAG.search(query, k=k)
+    texts = extract_text_from_search_results(results, folder, all_images)
     
-    # Извлечение текста
-    texts = extract_text_from_search_results(search_results, folder)
-    
-    # Отображение результатов
+    # Печать текстов
     for i, item in enumerate(texts, 1):
         print(f"\n РЕЗУЛЬТАТ {i}")
         print(f" Файл: {item['pdf_file']}")
@@ -276,19 +163,16 @@ def search_and_display_text(query, k=5, show_images=True):
         print(f" Релевантность: {item['score']}")
         print(" ТЕКСТ:")
         print("-" * 40)
-        
-        # Выводим первые 500 символов для краткости
-        text_preview = item['text'][:500] + "..." if len(item['text']) > 500 else item['text']
-        print(text_preview)
+        preview = item['text'][:500] + "..." if len(item['text']) > 500 else item['text']
+        print(preview)
         print("-" * 40)
     
-    # Показ изображений если нужно
-    if show_images and len(search_results) > 0:
-        images = get_grouped_images(search_results, all_images)
+    # Показ изображений
+    if show_images and len(results) > 0:
+        images = get_grouped_images(results, all_images)
         fig, axes = plt.subplots(1, min(len(images), 5), figsize=(20, 8))
         if len(images) == 1:
             axes = [axes]
-        
         for i, ax in enumerate(axes[:len(images)]):
             ax.imshow(images[i])
             ax.set_title(f"{texts[i]['pdf_file'][:20]}...\nСтр {texts[i]['page_num']}")
@@ -298,7 +182,28 @@ def search_and_display_text(query, k=5, show_images=True):
     
     return texts
 
-# Можно выполнить несколько поисков
-search_and_display_text("Финансовые результаты", k=3)
-# search_and_display_text("прибыль", k=3)
-# search_and_display_text("выручка", k=3)
+# ---------------- ОСНОВНОЙ СЦЕНАРИЙ -------------------------
+if __name__ == '__main__':
+    # Метаданные
+    metadata = []
+    pdf_files = [f for f in os.listdir(folder) if f.endswith(".pdf")]
+    for pdf_file in pdf_files:
+        meta_fields = ['Name', 'Size', 'Item type', 'Date modified', 'Date created']
+        metadata.append(get_file_metadata(folder, pdf_file, meta_fields))
+
+    # Загружаем модель RAG
+    RAG = RAGMultiModalModel.from_index(path_to_index)
+
+    # Конвертация PDF → изображения
+    all_images = convert_pdfs_to_images(folder)
+
+    # Пример поиска
+    text_query = "Финансовые результаты НЛМК"
+    results = RAG.search(text_query, k=5)
+    extracted_texts = extract_text_from_search_results(results, folder, all_images)
+
+    # Сохраняем результаты
+    save_results_to_file(extracted_texts, text_query, "nornikel_search_results.txt")
+
+    # Дополнительный поиск
+    search_and_display_text(RAG, "Финансовые результаты", folder, all_images, k=3)
