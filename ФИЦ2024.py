@@ -157,8 +157,7 @@ train_df = df.groupby("unique_id", group_keys=False).tail(344)
 models = build_models()
 nf = NeuralForecast(models=models, freq=FREQ)
 
-# ВНИМАНИЕ: val_size=30 — валидация на хвостовых точках тренировочного df.
-# Для честной оценки на истории лучше использовать cross_validation.
+# ВНИМАНИЕ: val_size=30 — валидация на хвостовых точках тренировочного df. При итоговом прогнозе val_size=0
 nf.fit(df=train_df, val_size=VAL_SIZE, time_col=TIME_COL, target_col=TARGET_COL)
 
 # Прогноз на горизонт H
